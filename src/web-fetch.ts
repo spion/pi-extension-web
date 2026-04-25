@@ -1,10 +1,5 @@
 /**
  * Web Fetch Tool
- *
- * Fetches a web document and converts it to markdown.
- * If the document is too large, returns headings for selective fetching.
- * Includes an LRU cache to avoid re-fetching and re-converting the same URL.
- *
  * Usage:
  * 1. Ensure markitdown is available: pip install markitdown
  * 2. Copy this file to ~/.pi/agent/extensions/
@@ -15,49 +10,6 @@ import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { text } from "node:stream/consumers";
-
-// ---------------------------------------------------------------------------
-// LRU Cache — in-memory, TTL-based, bounded by maxSize
-// ---------------------------------------------------------------------------
-
-class LRUCache<K, V> {
-	private cache = new Map<K, { value: V; expiry: number }>();
-
-	constructor(private maxSize = 50, private defaultTTL = 3_600_000) {}
-
-	get(key: K): V | undefined {
-		const entry = this.cache.get(key);
-		if (!entry) return undefined;
-		if (Date.now() > entry.expiry) {
-			this.cache.delete(key);
-			return undefined;
-		}
-		// Promote to most-recently-used (delete + re-insert)
-		this.cache.delete(key);
-		this.cache.set(key, entry);
-		return entry.value;
-	}
-
-	set(key: K, value: V): void {
-		if (this.cache.size >= this.maxSize) {
-			// Evict the oldest entry (first in insertion order)
-			const oldest = this.cache.keys().next().value;
-			this.cache.delete(oldest);
-		}
-		this.cache.set(key, { value, expiry: Date.now() + this.defaultTTL });
-	}
-}
-
-// ---------------------------------------------------------------------------
-// URL normalization — so variations map to the same cache entry
-// ---------------------------------------------------------------------------
-
-function normalizeUrl(url: string): string {
-	const u = new URL(url);
-	u.pathname = u.pathname.replace(/\/+$/, ""); // strip trailing slash
-	u.hash = "";                                // strip fragment
-	return u.toString();
-}
 
 // ---------------------------------------------------------------------------
 // HTTP fetch helper (used by markitdown pipeline)
@@ -75,14 +27,60 @@ async function runWithStdin(command: string, args: string[], input: string): Pro
 	return stdout;
 }
 
+// ---------------------------------------------------------------------------
+// Cache Management
+// ---------------------------------------------------------------------------
+
+interface CacheEntry {
+	markdown: string;
+	timestamp: number;
+}
+
+class MarkdownCache {
+	private cache = new Map<string, CacheEntry>();
+	private readonly maxSize: number;
+	private readonly maxAgeMs: number;
+
+	constructor(maxSize: number, maxAgeMs: number) {
+		this.maxSize = maxSize;
+		this.maxAgeMs = maxAgeMs;
+	}
+
+	get(url: string): string | undefined {
+		const entry = this.cache.get(url);
+		if (!entry) return undefined;
+
+		if (Date.now() - entry.timestamp > this.maxAgeMs) {
+			this.cache.delete(url);
+			return undefined;
+		}
+
+		return entry.markdown;
+	}
+
+	set(url: string, markdown: string): void {
+		if (this.cache.size >= this.maxSize) {
+			const firstKey = this.cache.keys().next().value;
+			if (firstKey !== undefined) {
+				this.cache.delete(firstKey);
+			}
+		}
+		this.cache.set(url, { markdown, timestamp: Date.now() });
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Extension Definition
+// ---------------------------------------------------------------------------
+
 const PARAMS = Type.Object({
 	url: Type.String({ description: "URL to fetch" }),
 	heading: Type.Optional(Type.Number({ description: "Specific heading number to fetch content for" })),
 });
 
 export default function webFetchExtension(pi: ExtensionAPI) {
-	// Shared cache across all tool invocations in this session
-	const cache = new LRUCache<string, string>(50, 3_600_000);
+
+	const cache = new MarkdownCache(50, 1000 * 60 * 30);
 
 	pi.registerTool({
 		name: "web-fetch",
@@ -92,16 +90,17 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 		parameters: PARAMS,
 		async execute(_toolCallId, params) {
 			const { url, heading } = params;
-			const key = normalizeUrl(url);
 
-			// --- Cache hit: skip fetch + markitdown ---
-			let markdown = cache.get(key);
-			if (!markdown) {
-				// --- Cache miss: fetch and convert ---
+			let markdown: string;
+			const cached = cache.get(url);
+
+			if (cached) {
+				markdown = cached;
+			} else {
 				const response = await fetch(url);
 				const html = await response.text();
 				markdown = await runWithStdin("uvx", ["markitdown"], html);
-				cache.set(key, markdown);
+				cache.set(url, markdown);
 			}
 
 			let output: string;
@@ -140,7 +139,7 @@ Which headings would you like to fetch?
 				output = content || `Could not find content for heading number ${heading}.`;
 			}
 
-			return { content: [{ type: "text", text: output }] };
+			return { content: [{ type: "text", text: output }], details: null };
 		},
 	});
 }

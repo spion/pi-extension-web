@@ -3,11 +3,24 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type":"module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "pi": {
+    "extensions": [
+      "./src/web-search.ts",
+      "./src/web-fetch.ts"
+    ]
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.33.0"
+  "packageManager": "pnpm@10.33.0",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.2",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
+  }
 }
