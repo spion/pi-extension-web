@@ -26,7 +26,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 		description: "Search the web for information",
 		parameters: PARAMS,
 		async execute(_toolCallId, params) {
-			const { stdout } = await execFileP("ddgr", ["--json", params.query]);
+			const { stdout } = await execFileP("uvx", ["ddgr", "--json", params.query]);
 			return { content: [{ type: "text", text: stdout }] };
 		},
 	});
